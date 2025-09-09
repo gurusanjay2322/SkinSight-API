@@ -120,7 +120,7 @@ Analyzes a skin image and provides personalized recommendations.
 
 Visit `http://localhost:5000/apidocs` to access the Swagger UI for interactive API testing.
 
-## ���️ Project Structure
+##  Project Structure
 
 ```
 SkinSight_API/
@@ -178,7 +178,7 @@ curl -X POST "http://localhost:5000/predict" \
   -F "lon=-74.0060"
 ```
 
-## ���️ Development
+##  Development
 
 ### Adding New Skin Types
 
