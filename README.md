@@ -2,7 +2,7 @@
 
 A Flask-based REST API that analyzes skin conditions from images and provides personalized skincare recommendations based on weather conditions and air quality data.
 
-## Ìºü Features
+## Features
 
 - **Skin Type Classification**: Uses a pre-trained ResNet50 model to classify skin into 5 categories:
   - Acne
@@ -23,7 +23,7 @@ A Flask-based REST API that analyzes skin conditions from images and provides pe
 
 - **Interactive API Documentation**: Built-in Swagger UI for easy testing and documentation
 
-## Ì∫Ä Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -75,7 +75,7 @@ A Flask-based REST API that analyzes skin conditions from images and provides pe
 
 The API will be available at `http://localhost:5000`
 
-## Ì≥ö API Documentation
+## API Documentation
 
 ### Endpoints
 
@@ -120,7 +120,7 @@ Analyzes a skin image and provides personalized recommendations.
 
 Visit `http://localhost:5000/apidocs` to access the Swagger UI for interactive API testing.
 
-## ÌøóÔ∏è Project Structure
+## ÔøΩÔøΩÔøΩÔ∏è Project Structure
 
 ```
 SkinSight_API/
@@ -139,7 +139,7 @@ SkinSight_API/
 ‚îî‚îÄ‚îÄ README.md               # This file
 ```
 
-## Ì¥ß Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -153,7 +153,7 @@ The application uses a ResNet50 model fine-tuned for skin classification. The mo
 - Color channels: RGB
 - Normalization: ImageNet standards
 
-## Ìºê External Services
+## External Services
 
 ### Weather Data
 - **Open-Meteo API**: Free weather data service
@@ -167,7 +167,7 @@ The application uses a ResNet50 model fine-tuned for skin classification. The mo
 - **Ollama**: Local LLM server
 - Uses Mistral model for generating personalized skincare advice
 
-## Ì∑™ Testing
+## Testing
 
 You can test the API using the Swagger UI at `http://localhost:5000/apidocs` or with curl:
 
@@ -178,7 +178,7 @@ curl -X POST "http://localhost:5000/predict" \
   -F "lon=-74.0060"
 ```
 
-## Ìª†Ô∏è Development
+## ÔøΩÔøΩÔøΩÔ∏è Development
 
 ### Adding New Skin Types
 
@@ -194,11 +194,11 @@ Add new weather parameters in `app/utils.py` by modifying the Open-Meteo API req
 
 Modify the prompt template in `app/model.py` to change how the LLM generates suggestions.
 
-## Ì≥ù License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Ì¥ù Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -206,11 +206,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 4. Add tests if applicable
 5. Submit a pull request
 
-## Ì≥û Support
+## Support
 
 For questions or issues, please open an issue on the GitHub repository.
 
-## Ì¥Æ Future Enhancements
+## Future Enhancements
 
 - [ ] Support for multiple image formats
 - [ ] Batch processing capabilities
