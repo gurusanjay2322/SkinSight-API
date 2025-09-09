@@ -6,6 +6,8 @@ from PIL import Image
 import io
 import os
 from dotenv import load_dotenv
+import subprocess
+import json
 
 # Load environment variables
 load_dotenv()
@@ -38,8 +40,6 @@ class_names = ['acne', 'burned', 'dry', 'normal', 'oily']
 # ----------------- Weather and AQI retrieval -----------------
 def get_weather(lat, lon):
     result = {}
-
-    # ----- Open-Meteo API for temperature and UV index -----
     try:
         url_meteo = (
             f"https://api.open-meteo.com/v1/forecast"
@@ -60,7 +60,6 @@ def get_weather(lat, lon):
     except Exception as e:
         result.update({"weather_error": str(e)})
 
-    # ----- WAQI API for air quality index -----
     try:
         url_aqi = (
             f"https://api.waqi.info/feed/geo:{lat};{lon}/"
@@ -82,6 +81,46 @@ def get_weather(lat, lon):
         result.update({"aqi_error": str(e)})
 
     return result
+
+
+# ----------------- Local LLM (Ollama) -----------------
+import requests
+
+import json
+import requests
+
+def ask_llm(prompt, model="mistral"):
+    try:
+        url = "http://localhost:11434/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False
+        }
+        response = requests.post(url, json=payload, timeout=60)
+
+        if response.status_code != 200:
+            return {"error": response.text}
+
+        data = response.json()
+        raw_text = data.get("response", "").strip()
+
+        # Try to parse LLM response as JSON
+        try:
+            parsed = json.loads(raw_text)
+            return parsed
+        except json.JSONDecodeError:
+            # If the model wrapped JSON in quotes, fix it
+            cleaned = raw_text.strip('` \n')
+            try:
+                return json.loads(cleaned)
+            except:
+                # fallback to wrapping
+                return {"suggestions": [raw_text]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 
 
 # ----------------- /predict endpoint -----------------
@@ -108,7 +147,6 @@ def predict():
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     input_tensor = transform(image).unsqueeze(0).to(device)
 
-    # Perform prediction
     with torch.no_grad():
         outputs = model(input_tensor)
         probabilities = torch.nn.functional.softmax(outputs, dim=1)
@@ -116,14 +154,12 @@ def predict():
         predicted_class = class_names[predicted_idx.item()]
         confidence = confidence.item()
 
-    # Get weather and AQI information
+    # Get weather and AQI info
     weather_data = get_weather(lat, lon)
 
-    # Dermatologically validated thresholds and suggestions
+    # Rule-based risk + suggestions
     risk_level = "Low"
     suggestions = []
-
-    # UV Index thresholds (WHO guidelines)
     uv_index = weather_data.get("uv_index")
     if uv_index is not None:
         if uv_index >= 8:
@@ -133,7 +169,6 @@ def predict():
             risk_level = "Moderate"
             suggestions.append("Use sunscreen with SPF 30 or higher.")
 
-    # AQI thresholds (US EPA)
     aqi = weather_data.get("aqi")
     if aqi is not None:
         if aqi > 200:
@@ -148,30 +183,51 @@ def predict():
                 risk_level = "Moderate"
             suggestions.append("Consider reducing outdoor activities.")
 
-    # Skin type specific advice (dermatology-backed)
+    # Skin type rules
     if predicted_class == "dry":
-        suggestions.append("Use a rich moisturizer daily to prevent dryness.")
-        suggestions.append("Avoid harsh soaps and long hot showers.")
+        suggestions.append("Use a rich moisturizer daily.")
     if predicted_class == "oily":
-        suggestions.append("Use non-comedogenic products to prevent clogged pores.")
-        suggestions.append("Cleanse skin twice daily to remove excess oil.")
+        suggestions.append("Use non-comedogenic products.")
     if predicted_class == "acne":
-        suggestions.append("Use products containing salicylic acid or benzoyl peroxide.")
-        suggestions.append("Avoid touching or picking at acne lesions.")
+        suggestions.append("Use products with salicylic acid.")
     if predicted_class == "burned":
-        suggestions.append("Apply soothing creams and avoid further sun exposure.")
+        suggestions.append("Apply soothing creams and avoid sun.")
     if predicted_class == "normal":
-        suggestions.append("Maintain a balanced skincare routine and protect from extreme conditions.")
+        suggestions.append("Maintain a balanced skincare routine.")
+
+    # ----------- Call LLM for extra personalized advice -----------
+    llm_prompt = f"""
+    You are a dermatologist assistant.
+    The user’s detected skin type is: {predicted_class}.
+    Confidence: {round(confidence,2)}.
+    Weather conditions: {weather_data}.
+    Rule-based risk level: {risk_level}.
+    Rule-based suggestions: {suggestions}.
+
+    Respond ONLY in valid JSON.
+    Format:
+    {{
+    "suggestions": [
+        "First tip...",
+        "Second tip...",
+        "Third tip..."
+    ]
+    }}
+    """
+    llm_response = ask_llm(llm_prompt)
+
+    llm_response = ask_llm(llm_prompt, model="mistral")
 
     return jsonify({
         "predicted_class": predicted_class,
         "confidence": round(confidence, 2),
         "weather": weather_data,
         "risk_level": risk_level,
-        "suggestions": suggestions
+        "rule_based_suggestions": suggestions,
+        "genai_suggestions": llm_response.get("suggestions", [])
     })
 
 
-# ----------------- Run the app -----------------
+
 if __name__ == "__main__":
     app.run(debug=True)
