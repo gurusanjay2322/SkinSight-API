@@ -13,16 +13,18 @@ WAQI_API_KEY = os.getenv("WAQI_API_KEY")
 
 app = Flask(__name__)
 
-# Load the model once when the app starts
+# ----------------- Load the model -----------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
 num_ftrs = model.fc.in_features
 model.fc = torch.nn.Linear(num_ftrs, 5)
+
 model.load_state_dict(torch.load("model/skin_type_classifier.pth", map_location=device))
 model = model.to(device)
 model.eval()
 
-# Transform pipeline
+# ----------------- Transform pipeline -----------------
 transform = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -33,10 +35,11 @@ transform = transforms.Compose([
 
 class_names = ['acne', 'burned', 'dry', 'normal', 'oily']
 
-@app.route('/weather', methods=['GET'])
+# ----------------- Weather and AQI retrieval -----------------
 def get_weather(lat, lon):
     result = {}
-    # Open-Meteo
+
+    # ----- Open-Meteo API for temperature and UV index -----
     try:
         url_meteo = (
             f"https://api.open-meteo.com/v1/forecast"
@@ -44,7 +47,7 @@ def get_weather(lat, lon):
             f"&daily=temperature_2m_max,temperature_2m_min,uv_index_max"
             f"&timezone=auto"
         )
-        response = requests.get(url_meteo)
+        response = requests.get(url_meteo, timeout=10)
         data = response.json()
 
         daily = data.get("daily", {})
@@ -57,13 +60,13 @@ def get_weather(lat, lon):
     except Exception as e:
         result.update({"weather_error": str(e)})
 
-    # WAQI
+    # ----- WAQI API for air quality index -----
     try:
         url_aqi = (
             f"https://api.waqi.info/feed/geo:{lat};{lon}/"
             f"?token={WAQI_API_KEY}"
         )
-        response = requests.get(url_aqi)
+        response = requests.get(url_aqi, timeout=10)
         data = response.json()
 
         if data.get("status") == "ok":
@@ -81,6 +84,7 @@ def get_weather(lat, lon):
     return result
 
 
+# ----------------- /predict endpoint -----------------
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'image' not in request.files:
@@ -99,12 +103,12 @@ def predict():
     except ValueError:
         return jsonify({"error": "Invalid latitude or longitude"}), 400
 
-    # Process image
+    # Process the uploaded image
     img_bytes = image_file.read()
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     input_tensor = transform(image).unsqueeze(0).to(device)
 
-    # Predict
+    # Perform prediction
     with torch.no_grad():
         outputs = model(input_tensor)
         probabilities = torch.nn.functional.softmax(outputs, dim=1)
@@ -112,32 +116,62 @@ def predict():
         predicted_class = class_names[predicted_idx.item()]
         confidence = confidence.item()
 
-    # Get weather and AQI data
+    # Get weather and AQI information
     weather_data = get_weather(lat, lon)
 
-    # Determine risk level and suggestions based on skin type and AQI/UV
+    # Dermatologically validated thresholds and suggestions
     risk_level = "Low"
     suggestions = []
 
-    if weather_data.get("uv_index") and weather_data["uv_index"] > 7:
-        risk_level = "High"
-        suggestions.append("Avoid direct sunlight between 10 AM - 4 PM.")
-    if weather_data.get("aqi") and weather_data["aqi"] > 150:
-        risk_level = "High"
-        suggestions.append("Limit outdoor activities and wear a mask.")
+    # UV Index thresholds (WHO guidelines)
+    uv_index = weather_data.get("uv_index")
+    if uv_index is not None:
+        if uv_index >= 8:
+            risk_level = "High"
+            suggestions.append("Avoid direct sunlight between 10 AM and 4 PM.")
+        elif uv_index >= 6:
+            risk_level = "Moderate"
+            suggestions.append("Use sunscreen with SPF 30 or higher.")
+
+    # AQI thresholds (US EPA)
+    aqi = weather_data.get("aqi")
+    if aqi is not None:
+        if aqi > 200:
+            risk_level = "Very High"
+            suggestions.append("Avoid outdoor activities and wear a pollution mask.")
+        elif aqi > 150:
+            if risk_level != "Very High":
+                risk_level = "High"
+            suggestions.append("Limit prolonged or heavy exertion outdoors.")
+        elif aqi > 100:
+            if risk_level == "Low":
+                risk_level = "Moderate"
+            suggestions.append("Consider reducing outdoor activities.")
+
+    # Skin type specific advice (dermatology-backed)
     if predicted_class == "dry":
-        suggestions.append("Use moisturizer regularly.")
+        suggestions.append("Use a rich moisturizer daily to prevent dryness.")
+        suggestions.append("Avoid harsh soaps and long hot showers.")
     if predicted_class == "oily":
-        suggestions.append("Avoid oily skincare products.")
+        suggestions.append("Use non-comedogenic products to prevent clogged pores.")
+        suggestions.append("Cleanse skin twice daily to remove excess oil.")
+    if predicted_class == "acne":
+        suggestions.append("Use products containing salicylic acid or benzoyl peroxide.")
+        suggestions.append("Avoid touching or picking at acne lesions.")
+    if predicted_class == "burned":
+        suggestions.append("Apply soothing creams and avoid further sun exposure.")
+    if predicted_class == "normal":
+        suggestions.append("Maintain a balanced skincare routine and protect from extreme conditions.")
 
     return jsonify({
         "predicted_class": predicted_class,
-        "confidence": confidence,
+        "confidence": round(confidence, 2),
         "weather": weather_data,
         "risk_level": risk_level,
         "suggestions": suggestions
     })
 
 
+# ----------------- Run the app -----------------
 if __name__ == "__main__":
     app.run(debug=True)
