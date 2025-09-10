@@ -35,7 +35,7 @@ A Flask-based REST API that analyzes skin conditions from images and provides pe
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/gurusanjay2322/SkinSight-API.git
    cd SkinSight_API
    ```
 
