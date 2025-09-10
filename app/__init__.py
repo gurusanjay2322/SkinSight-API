@@ -1,4 +1,5 @@
 from flask import Flask
+from flask_cors import CORS
 from flasgger import Swagger
 
 def create_app():
@@ -12,7 +13,11 @@ def create_app():
 
     Swagger(app)
 
+    # Enable CORS globally or restrict it to certain routes
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+    # Import and register blueprint
     from .routes import bp as api_bp
-    app.register_blueprint(api_bp)
+    app.register_blueprint(api_bp, url_prefix='/api')
 
     return app
