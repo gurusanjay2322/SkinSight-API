@@ -130,7 +130,7 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func, disease_result=No
     ]
     }}
     """
-    llm_response = llm_func(llm_prompt, model="mistral")
+    llm_response = llm_func(llm_prompt, model="gpt-oss:120b")
 
     result = {
         "predicted_class": predicted_class,

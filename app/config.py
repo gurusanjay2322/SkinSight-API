@@ -7,4 +7,5 @@ load_dotenv()
 WAQI_API_KEY = os.getenv("WAQI_API_KEY")
 
 # Ollama settings
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
