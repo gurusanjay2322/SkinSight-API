@@ -1,8 +1,9 @@
 import requests
 import json
-from .config import WAQI_API_KEY, OLLAMA_URL
-
+from .config import WAQI_API_KEY, OLLAMA_URL, OLLAMA_API_KEY
+from dotenv import load_dotenv
 # ----------------- Weather + AQI -----------------
+load_dotenv() 
 def get_weather(lat, lon):
     result = {}
     try:
@@ -45,24 +46,76 @@ def get_weather(lat, lon):
     return result
 
 # ----------------- Local LLM (Ollama) -----------------
-def ask_llm(prompt, model="mistral"):
+def ask_llm(prompt: str, model: str = "gpt-oss:120b"):
+    """
+    Calls either a local Ollama server or Ollama Cloud API based on OLLAMA_URL.
+    Handles bearer auth automatically and returns structured suggestions.
+    """
+
     try:
-        payload = {"model": model, "prompt": prompt, "stream": False}
-        response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+        headers = {"Content-Type": "application/json"}
+
+        # 🌐 Cloud API (https://ollama.com/api/chat)
+        if "ollama.com/api/chat" in OLLAMA_URL:
+            if not OLLAMA_API_KEY:
+                print("❌ Missing OLLAMA_API_KEY for cloud request")
+                return {"error": "Missing API key"}
+
+            headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            }
+
+        # 💻 Local Ollama (http://localhost:11434/api/generate)
+        else:
+            payload = {"model": model, "prompt": prompt, "stream": False}
+
+        # Make request
+        response = requests.post(OLLAMA_URL, headers=headers, json=payload, timeout=60)
 
         if response.status_code != 200:
+            print(f"❌ LLM request failed ({response.status_code}):", response.text)
             return {"error": response.text}
 
         data = response.json()
-        raw_text = data.get("response", "").strip()
 
+        # Extract raw text
+        if "ollama.com/api/chat" in OLLAMA_URL:
+            raw_text = (
+                data.get("message", {}).get("content")
+                or data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            )
+        else:
+            raw_text = data.get("response", "")
+
+        raw_text = (raw_text or "").strip()
+
+        if not raw_text:
+            print("⚠️ Empty response from LLM:", data)
+            return {"suggestions": []}
+
+        # 🧠 Handle JSON string responses like '{"suggestions": [...]}'
         try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError:
-            cleaned = raw_text.strip('` \n')
-            try:
-                return json.loads(cleaned)
-            except:
-                return {"suggestions": [raw_text]}
+            cleaned = raw_text.strip("` \n")
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, str):  # If double-encoded JSON
+                parsed = json.loads(parsed)
+
+            if isinstance(parsed, dict) and "suggestions" in parsed:
+                return parsed
+        except Exception as e:
+            print("⚠️ JSON parse failed:", e)
+
+        # 🪶 Fallback: split bullet points or sentences
+        suggestions = [
+            line.strip("-• ").strip()
+            for line in raw_text.split("\n")
+            if line.strip()
+        ]
+        return {"suggestions": suggestions[:5]}
+
     except Exception as e:
+        print("❌ Exception in ask_llm:", e)
         return {"error": str(e)}
