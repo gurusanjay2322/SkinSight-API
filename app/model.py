@@ -26,7 +26,7 @@ transform = transforms.Compose([
                          [0.229, 0.224, 0.225])
 ])
 
-def predict_skin(image_file, lat, lon, weather_data, llm_func):
+def predict_skin(image_file, lat, lon, weather_data, llm_func, disease_result=None):
     # Preprocess image
     img_bytes = image_file.read()
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
@@ -77,15 +77,48 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func):
         suggestions.append("Apply soothing creams and avoid sun.")
     if predicted_class == "normal":
         suggestions.append("Maintain a balanced skincare routine.")
+    
+    # Enhance suggestions based on disease detection
+    disease_info = None
+    if disease_result:
+        disease_class = disease_result.get("predicted_class", "")
+        disease_confidence = disease_result.get("confidence", 0)
+        disease_info = {
+            "predicted_class": disease_class,
+            "confidence": disease_confidence,
+            "confidence_percentage": disease_result.get("confidence_percentage", f"{disease_confidence:.2%}")
+        }
+        
+        # Add disease-specific suggestions
+        if disease_confidence > 0.5:  # Only if confidence is reasonable
+            if "Carcinoma" in disease_class or "Squamous" in disease_class or "Basal" in disease_class:
+                risk_level = "Very High"
+                suggestions.insert(0, f"⚠️ Detected: {disease_class}. Please consult a dermatologist immediately.")
+                suggestions.insert(1, "Avoid sun exposure and use high SPF sunscreen.")
+            elif "Keratosis" in disease_class:
+                if risk_level == "Low":
+                    risk_level = "Moderate"
+                suggestions.insert(0, f"Detected: {disease_class}. Consider regular skin monitoring.")
+                suggestions.insert(1, "Use sunscreen and avoid excessive sun exposure.")
+            elif "Nevus" in disease_class:
+                suggestions.insert(0, "Monitor any changes in size, shape, or color.")
+                suggestions.insert(1, "Regular dermatological check-ups recommended.")
+            elif "Lesion" in disease_class:
+                suggestions.insert(0, "Monitor the lesion for any changes.")
+                suggestions.insert(1, "Consider consulting a dermatologist for evaluation.")
 
     # ----------- Call LLM for extra personalized advice ----------- 
+    disease_context = ""
+    if disease_info:
+        disease_context = f"\nDetected skin condition: {disease_info['predicted_class']} (confidence: {disease_info['confidence_percentage']})."
+    
     llm_prompt = f"""
     You are a dermatologist assistant.
-    The user’s detected skin type is: {predicted_class}.
+    The user's detected skin type is: {predicted_class}.
     Confidence: {round(confidence,2)}.
     Weather conditions: {weather_data}.
     Rule-based risk level: {risk_level}.
-    Rule-based suggestions: {suggestions}.
+    Rule-based suggestions: {suggestions}.{disease_context}
 
     Respond ONLY in valid JSON.
     Format:
@@ -99,7 +132,7 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func):
     """
     llm_response = llm_func(llm_prompt, model="mistral")
 
-    return {
+    result = {
         "predicted_class": predicted_class,
         "confidence": round(confidence, 2),
         "weather": weather_data,
@@ -107,3 +140,9 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func):
         "rule_based_suggestions": suggestions,
         "genai_suggestions": llm_response.get("suggestions", [])
     }
+    
+    # Include disease information if available
+    if disease_info:
+        result["disease"] = disease_info
+
+    return result
