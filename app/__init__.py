@@ -19,5 +19,8 @@ def create_app():
     # Import and register blueprint
     from .routes import bp as api_bp
     app.register_blueprint(api_bp, url_prefix='/api')
+    @app.route('/')
+    def home():
+        return '✅ Flask App Loaded Properly — Blueprint Active'
 
     return app
