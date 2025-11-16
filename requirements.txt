@@ -275,3 +275,4 @@ xgboost==3.0.0
 yarl==1.9.4
 zipp==3.19.2
 zope.interface==7.2
+numpy>=1.24.1,<1.27
