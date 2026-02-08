@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # External API keys
-WAQI_API_KEY = os.getenv("WAQI_API_KEY")
+OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
 # Ollama settings
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")

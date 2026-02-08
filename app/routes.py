@@ -1,6 +1,9 @@
 from flask import Blueprint, request, jsonify
+from PIL import Image
+from io import BytesIO
 from .utils import get_weather, ask_llm
 from .model import predict_skin
+from .disease_model import predict as predict_disease
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -9,6 +12,13 @@ import requests
 from io import BytesIO
 
 bp = Blueprint("api", __name__)
+import mediapipe as mp
+# Explicitly import solutions to ensure they are available
+try:
+    import mediapipe.python.solutions as solutions
+except ImportError:
+    pass
+
 mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
 
 def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25):
@@ -65,10 +75,9 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25)
 
     return valid, human_ratio, skin_ratio
 
-def detect_disease(image_file):
+def detect_disease_local(image_file):
     """
-    Call the disease detection API on port 5001 to detect skin diseases.
-    Returns disease prediction result or None if API call fails.
+    Detect skin disease using the local loaded model.
     """
     try:
         # Reset file pointer to beginning
@@ -76,37 +85,22 @@ def detect_disease(image_file):
         
         # Read the file content
         image_bytes = image_file.read()
-        image_file.seek(0)  # Reset again for potential reuse
+        image = Image.open(BytesIO(image_bytes))
         
-        # Prepare the image file for forwarding
-        files = {
-            'image': (
-                image_file.filename or 'image.jpg',
-                BytesIO(image_bytes),
-                image_file.content_type or 'image/jpeg'
-            )
+        # Predict
+        predicted_class, confidence = predict_disease(image)
+        
+        disease_data = {
+            "predicted_class": predicted_class,
+            "confidence": float(confidence),
+            "confidence_percentage": f"{confidence:.2%}"
         }
         
-        # Call disease detection API
-        disease_api_url = "http://localhost:5001/predict"
-        response = requests.post(
-            disease_api_url,
-            files=files,
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            disease_data = response.json()
-            print(f"[DiseaseDetection] Success: {disease_data}")
-            return disease_data
-        else:
-            print(f"[DiseaseDetection] API returned status {response.status_code}: {response.text}")
-            return None
-    except requests.exceptions.RequestException as e:
-        print(f"[DiseaseDetection] Error calling disease API: {str(e)}")
-        return None
+        print(f"[DiseaseDetection] Success: {disease_data}")
+        return disease_data
+
     except Exception as e:
-        print(f"[DiseaseDetection] Unexpected error: {str(e)}")
+        print(f"[DiseaseDetection] Error: {str(e)}")
         return None
 
 @bp.route("/predict", methods=["POST"])
@@ -154,6 +148,15 @@ def predict():
               type: array
               items:
                 type: string
+            disease:
+              type: object
+              properties:
+                predicted_class:
+                  type: string
+                confidence:
+                  type: number
+                confidence_percentage:
+                  type: string
     """
     if 'image' not in request.files:
         return jsonify({"error": "Image file is missing"}), 400
@@ -173,9 +176,9 @@ def predict():
 
     weather_data = get_weather(lat, lon)
     
-    # Call disease detection API
+    # Call disease detection locally
     image_file.seek(0)  # Reset file pointer
-    disease_result = detect_disease(image_file)
+    disease_result = detect_disease_local(image_file)
     
     # Predict skin type with disease information
     image_file.seek(0)  # Reset file pointer again
@@ -205,7 +208,7 @@ def valid_skin():
         if valid:
             try:
                 image_file.seek(0)  # Reset file pointer
-                disease_result = detect_disease(image_file)
+                disease_result = detect_disease_local(image_file)
             except Exception as e:
                 print(f"[validSkin] Disease detection failed: {str(e)}")
                 # Continue even if disease detection fails
