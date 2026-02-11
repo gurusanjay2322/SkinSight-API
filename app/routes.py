@@ -110,7 +110,7 @@ def chat_with_context():
     return Response(stream_with_context(generate()), mimetype='text/plain')
 
 
-def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25):
+def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.08):
     """
     Improved skin detection: requires both human-like segmentation and realistic skin tone clustering.
     Rejects false positives (like objects, cans, or backgrounds).
