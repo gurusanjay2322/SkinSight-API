@@ -114,11 +114,8 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25)
     """
     Improved skin detection: requires both human-like segmentation and realistic skin tone clustering.
     Rejects false positives (like objects, cans, or backgrounds).
+    Falls back to HSV-only detection if MediaPipe fails.
     """
-    import mediapipe as mp
-    mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
-    mp_face = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.6)
-
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
         file_storage.save(tmp.name)
@@ -130,37 +127,60 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25)
 
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Step 1: MediaPipe segmentation
-    seg = mp_selfie.process(rgb)
-    mask = seg.segmentation_mask
-    if mask is None:
-        return False, 0, 0
+    # Try MediaPipe first, fallback to HSV-only if it fails
+    human_ratio = 0
+    has_face = False
+    use_mediapipe = True
 
-    human_ratio = float(np.mean(mask > 0.5))
+    try:
+        import mediapipe as mp
+        mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+        
+        # Step 1: MediaPipe segmentation
+        seg = mp_selfie.process(rgb)
+        mask = seg.segmentation_mask
+        if mask is not None:
+            human_ratio = float(np.mean(mask > 0.5))
+        
+        # Step 2: Face detection
+        try:
+            mp_face = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.6)
+            faces = mp_face.process(rgb)
+            has_face = bool(faces.detections)
+        except Exception as e:
+            print(f"[validSkin] Face detection failed (non-critical): {e}")
+            has_face = False
+            
+    except Exception as e:
+        print(f"[validSkin] MediaPipe failed, using HSV-only fallback: {e}")
+        use_mediapipe = False
+        human_ratio = 0.5  # Assume human present for HSV-only mode
 
-    # Step 2: Face detection (bonus validation)
-    faces = mp_face.process(rgb)
-    has_face = bool(faces.detections)
-
-    # Step 3: Stricter HSV range (avoid object false positives)
+    # Step 3: HSV skin color detection (always works)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower = np.array([0, 48, 80], dtype=np.uint8)
     upper = np.array([17, 200, 255], dtype=np.uint8)
     skin_mask = cv2.inRange(hsv, lower, upper)
 
-    # Apply the human mask (only count skin-colored pixels inside segmented human regions)
-    skin_mask = cv2.bitwise_and(skin_mask, skin_mask, mask=(mask > 0.5).astype(np.uint8) * 255)
+    if use_mediapipe and mask is not None:
+        # Apply the human mask (only count skin-colored pixels inside segmented human regions)
+        skin_mask = cv2.bitwise_and(skin_mask, skin_mask, mask=(mask > 0.5).astype(np.uint8) * 255)
+    
     skin_ratio = float(np.count_nonzero(skin_mask) / (img.size / 3))
 
-    # Step 4: Add texture sanity check — skin has mild color variation
+    # Step 4: Texture sanity check
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     variance = np.var(gray)
-    texture_ok = variance > 100  # filter out flat or glossy surfaces (like cans/paper)
+    texture_ok = variance > 100
 
     # Final validity rule
-    valid = ((human_ratio > human_threshold and skin_ratio > skin_threshold and texture_ok) or has_face)
+    if use_mediapipe:
+        valid = ((human_ratio > human_threshold and skin_ratio > skin_threshold and texture_ok) or has_face)
+    else:
+        # HSV-only mode: be more lenient
+        valid = (skin_ratio > skin_threshold and texture_ok)
 
-    print(f"[validSkin] human_ratio={human_ratio:.3f}, skin_ratio={skin_ratio:.3f}, variance={variance:.2f}, face={has_face}")
+    print(f"[validSkin] human_ratio={human_ratio:.3f}, skin_ratio={skin_ratio:.3f}, variance={variance:.2f}, face={has_face}, mediapipe={use_mediapipe}")
 
     return valid, human_ratio, skin_ratio
 

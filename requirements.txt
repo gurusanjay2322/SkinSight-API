@@ -1,10 +1,15 @@
 flask
 flask-cors
 flasgger
+gunicorn
 pillow
-opencv-python
+opencv-python-headless
 numpy
 mediapipe
 requests
 openai
 python-dotenv
+torch
+torchvision
+tensorflow
+huggingface_hub

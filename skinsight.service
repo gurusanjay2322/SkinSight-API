@@ -1,0 +1,15 @@
+[Unit]
+Description=SkinSight API Flask Server
+After=network.target
+
+[Service]
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/SkinSight-API
+Environment="PATH=/home/YOUR_USERNAME/SkinSight-API/venv/bin"
+EnvironmentFile=/home/YOUR_USERNAME/SkinSight-API/.env
+ExecStart=/home/YOUR_USERNAME/SkinSight-API/venv/bin/gunicorn --bind=0.0.0.0:5000 --timeout 120 --workers 2 run:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
