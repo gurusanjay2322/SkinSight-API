@@ -179,77 +179,61 @@ def get_weather(lat, lon):
 
     return result
 
-# ----------------- Local LLM (Ollama) -----------------
-def ask_llm(prompt: str, model: str = "gpt-oss:120b"):
+# ----------------- AI Suggestions (OpenAI) -----------------
+def ask_llm(prompt: str, model: str = "gpt-3.5-turbo"):
     """
-    Calls either a local Ollama server or Ollama Cloud API based on OLLAMA_URL.
-    Handles bearer auth automatically and returns structured suggestions.
+    Calls OpenAI API to generate skin care suggestions.
+    Returns a dict with 'suggestions' list.
     """
+    import os
+    import openai
+
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+    if not openai.api_key:
+        print("❌ Missing OPENAI_API_KEY")
+        return {"error": "Missing API key", "suggestions": []}
 
     try:
-        headers = {"Content-Type": "application/json"}
+        response = openai.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a dermatology expert AI. Respond ONLY with a JSON object containing a 'suggestions' key with a list of 3-5 actionable skin care tips. No markdown, no extra text."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
 
-        # 🌐 Cloud API (https://ollama.com/api/chat)
-        if "ollama.com/api/chat" in OLLAMA_URL:
-            if not OLLAMA_API_KEY:
-                print("❌ Missing OLLAMA_API_KEY for cloud request")
-                return {"error": "Missing API key"}
-
-            headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-            }
-
-        # 💻 Local Ollama (http://localhost:11434/api/generate)
-        else:
-            payload = {"model": model, "prompt": prompt, "stream": False}
-
-        # Make request
-        response = requests.post(OLLAMA_URL, headers=headers, json=payload, timeout=60)
-
-        if response.status_code != 200:
-            print(f"❌ LLM request failed ({response.status_code}):", response.text)
-            return {"error": response.text}
-
-        data = response.json()
-
-        # Extract raw text
-        if "ollama.com/api/chat" in OLLAMA_URL:
-            raw_text = (
-                data.get("message", {}).get("content")
-                or data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-        else:
-            raw_text = data.get("response", "")
-
-        raw_text = (raw_text or "").strip()
-
+        raw_text = response.choices[0].message.content.strip()
+        
         if not raw_text:
-            print("⚠️ Empty response from LLM:", data)
+            print("⚠️ Empty response from OpenAI")
             return {"suggestions": []}
 
-        # 🧠 Handle JSON string responses like '{"suggestions": [...]}'
+        # Try to parse as JSON
         try:
             cleaned = raw_text.strip("` \n")
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
             parsed = json.loads(cleaned)
-            if isinstance(parsed, str):  # If double-encoded JSON
-                parsed = json.loads(parsed)
-
             if isinstance(parsed, dict) and "suggestions" in parsed:
                 return parsed
         except Exception as e:
-            print("⚠️ JSON parse failed:", e)
+            print(f"⚠️ JSON parse failed: {e}")
 
-        # 🪶 Fallback: split bullet points or sentences
+        # Fallback: split bullet points
         suggestions = [
-            line.strip("-• ").strip()
+            line.strip("-•* ").strip()
             for line in raw_text.split("\n")
-            if line.strip()
+            if line.strip() and not line.strip().startswith("{")
         ]
         return {"suggestions": suggestions[:5]}
 
     except Exception as e:
-        print("❌ Exception in ask_llm:", e)
-        return {"error": str(e)}
+        print(f"❌ Exception in ask_llm (OpenAI): {e}")
+        return {"error": str(e), "suggestions": []}
+

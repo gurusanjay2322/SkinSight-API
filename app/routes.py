@@ -62,16 +62,22 @@ def chat_with_context():
         return jsonify({"error": "Question is required"}), 400
 
     # System prompt engineering
-    system_prompt = f"""You are 'GlowBot', an expert AI Demotologist assistant. 
+    from datetime import datetime
+    current_time = datetime.now().strftime("%I:%M %p")
+    
+    system_prompt = f"""You are 'GlowBot', an expert AI Dermatologist assistant. 
     You have analyzed the user's skin and here are the results:
     
     Condition: {context.get('predictedClass', 'Unknown')}
     Confidence: {context.get('confidence', 0)}
     Risk Level: {context.get('riskLevel', 'Unknown')}
     Weather Context: UV Index {context.get('weather', {}).get('uv_index', 'N/A')}, Humidity {context.get('weather', {}).get('humidity', 'N/A')}%
+    Current Time: {current_time}
+    Time Period: {context.get('weather', {}).get('time_period', 'Unknown')}
     
     Your goal is to answer the user's questions specifically about THEIR skin condition based on this data.
     - Be empathetic but professional.
+    - Give time-relevant advice (e.g. if it's night, suggest night routine; if daytime, suggest sun protection).
     - Do NOT give medical prescriptions, only OTC advice and routine tips.
     - If the risk is High/Very High, strongly advise seeing a doctor.
     - Keep answers concise (under 3 sentences) unless asked for details.
