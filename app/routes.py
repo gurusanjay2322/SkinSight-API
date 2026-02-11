@@ -12,14 +12,97 @@ import requests
 from io import BytesIO
 
 bp = Blueprint("api", __name__)
-import mediapipe as mp
-# Explicitly import solutions to ensure they are available
-try:
-    import mediapipe.python.solutions as solutions
-except ImportError:
-    pass
 
-mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+# Initialize OpenAI
+import os
+import openai
+from flask import Response, stream_with_context
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+@bp.route("/chat", methods=["POST"])
+def chat_with_context():
+    """
+    Chat with context about skin analysis
+    ---
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            context:
+              type: object
+              description: The full skin analysis result
+            question:
+              type: string
+              description: User's question
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+    responses:
+      200:
+        description: Chat response
+    """
+    data = request.json
+    context = data.get('context', {})
+    question = data.get('question', '')
+    history = data.get('history', [])
+
+    if not question:
+        return jsonify({"error": "Question is required"}), 400
+
+    # System prompt engineering
+    system_prompt = f"""You are 'GlowBot', an expert AI Demotologist assistant. 
+    You have analyzed the user's skin and here are the results:
+    
+    Condition: {context.get('predictedClass', 'Unknown')}
+    Confidence: {context.get('confidence', 0)}
+    Risk Level: {context.get('riskLevel', 'Unknown')}
+    Weather Context: UV Index {context.get('weather', {}).get('uv_index', 'N/A')}, Humidity {context.get('weather', {}).get('humidity', 'N/A')}%
+    
+    Your goal is to answer the user's questions specifically about THEIR skin condition based on this data.
+    - Be empathetic but professional.
+    - Do NOT give medical prescriptions, only OTC advice and routine tips.
+    - If the risk is High/Very High, strongly advise seeing a doctor.
+    - Keep answers concise (under 3 sentences) unless asked for details.
+    """
+
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add conversation history (last 5 messages to save tokens)
+    messages.extend(history[-5:])
+    
+    # Add current question
+    messages.append({"role": "user", "content": question})
+
+    def generate():
+        try:
+            # Use OpenAI ChatCompletion (Streaming)
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                stream=True
+            )
+            
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            yield f"Error: {str(e)}"
+
+    return Response(stream_with_context(generate()), mimetype='text/plain')
+
 
 def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.25):
     """
@@ -79,7 +162,16 @@ def detect_disease_local(image_file):
     """
     Detect skin disease using the local loaded model.
     """
+    from .disease_model import get_model, get_model_error, predict as predict_disease_func
+    
     try:
+        # Check if model is loaded
+        model = get_model()
+        if model is None:
+            error = get_model_error()
+            print(f"[DiseaseDetection] Model not loaded. Error: {error}")
+            return None
+        
         # Reset file pointer to beginning
         image_file.seek(0)
         
@@ -87,8 +179,10 @@ def detect_disease_local(image_file):
         image_bytes = image_file.read()
         image = Image.open(BytesIO(image_bytes))
         
+        print(f"[DiseaseDetection] Running prediction...")
+        
         # Predict
-        predicted_class, confidence = predict_disease(image)
+        predicted_class, confidence = predict_disease_func(image)
         
         disease_data = {
             "predicted_class": predicted_class,
@@ -100,7 +194,9 @@ def detect_disease_local(image_file):
         return disease_data
 
     except Exception as e:
+        import traceback
         print(f"[DiseaseDetection] Error: {str(e)}")
+        print(traceback.format_exc())
         return None
 
 @bp.route("/predict", methods=["POST"])

@@ -38,6 +38,10 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func, disease_result=No
         confidence, predicted_idx = torch.max(probabilities, 1)
         predicted_class = class_names[predicted_idx.item()]
         confidence = confidence.item()
+        
+        # Get all class probabilities for the confidence chart
+        all_probabilities = probabilities[0].cpu().numpy()
+        class_scores = {class_names[i]: round(float(all_probabilities[i]) * 100, 1) for i in range(len(class_names))}
 
     # Rule-based risk + suggestions
     risk_level = "Low"
@@ -135,6 +139,7 @@ def predict_skin(image_file, lat, lon, weather_data, llm_func, disease_result=No
     result = {
         "predicted_class": predicted_class,
         "confidence": round(confidence, 2),
+        "class_scores": class_scores,  # All 5 skin type probabilities
         "weather": weather_data,
         "risk_level": risk_level,
         "rule_based_suggestions": suggestions,

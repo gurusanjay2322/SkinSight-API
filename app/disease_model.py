@@ -1,135 +1,184 @@
 import tensorflow as tf
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 import numpy as np
 from PIL import Image
 import os
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Input
+import h5py
+import json
 
-# Define the class names in the correct order
+# HAM10000 class names (7 classes)
 CLASS_NAMES = [
-    'Actinic Keratosis', 'Basal Cell Carcinoma', 'Dermatofibroma', 'Nevus', 
-    'Pigmented Benign Keratosis', 'Seborrheic Keratosis', 
-    'Squamous Cell Carcinoma', 'Vascular Lesion'
+    'Actinic Keratoses (AKIEC)',
+    'Basal Cell Carcinoma (BCC)',
+    'Benign Keratosis (BKL)',
+    'Dermatofibroma (DF)',
+    'Melanoma (MEL)',
+    'Melanocytic Nevi (NV)',
+    'Vascular Lesion (VASC)'
 ]
 
-# Global model variable
+CLASS_CODES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+
+CLASS_INFO = {
+    'akiec': {'name': 'Actinic Keratosis', 'severity': 'Medium', 'description': 'Pre-cancerous rough patch caused by sun damage.'},
+    'bcc': {'name': 'Basal Cell Carcinoma', 'severity': 'High', 'description': 'Common skin cancer. Slow-growing but requires medical attention.'},
+    'bkl': {'name': 'Benign Keratosis', 'severity': 'Low', 'description': 'Non-cancerous skin growth. Usually harmless.'},
+    'df': {'name': 'Dermatofibroma', 'severity': 'Low', 'description': 'Benign fibrous nodule. Usually harmless.'},
+    'mel': {'name': 'Melanoma', 'severity': 'Critical', 'description': 'Serious skin cancer - consult a dermatologist immediately.'},
+    'nv': {'name': 'Melanocytic Nevus', 'severity': 'Low', 'description': 'Common mole. Usually benign.'},
+    'vasc': {'name': 'Vascular Lesion', 'severity': 'Low', 'description': 'Blood vessel-related marking. Usually benign.'}
+}
+
 model = None
 model_load_error = None
+TEMPERATURE = 2.77
 
-def build_model():
-    """Reconstructs the EfficientNetB0 model architecture."""
-    # Input shape used in training (likely 224x224x3 for EfficientNet)
-    inputs = Input(shape=(224, 224, 3))
-    
-    # Base model with ImageNet weights (we'll overwrite them, but it initializes the structure)
-    base_model = EfficientNetB0(include_top=False, weights=None, input_tensor=inputs)
-    
-    # Rebuild the head
-    x = base_model.output
-    x = GlobalAveragePooling2D()(x)
-    outputs = Dense(len(CLASS_NAMES), activation='softmax')(x)
-    
-    model = Model(inputs=inputs, outputs=outputs)
-    return model
+def fix_model_config(model_path):
+    """
+    Fix model config by removing incompatible parameters.
+    Returns path to fixed model or None if fix not needed/possible.
+    """
+    try:
+        fixed_path = model_path.replace('.h5', '_fixed.h5')
+        
+        # If already fixed, return the fixed path
+        if os.path.exists(fixed_path):
+            return fixed_path
+            
+        print("  Fixing model compatibility...")
+        
+        # Copy and fix the h5 file
+        import shutil
+        shutil.copy(model_path, fixed_path)
+        
+        with h5py.File(fixed_path, 'r+') as f:
+            if 'model_config' in f.attrs:
+                config_str = f.attrs['model_config']
+                if isinstance(config_str, bytes):
+                    config_str = config_str.decode('utf-8')
+                
+                config = json.loads(config_str)
+                
+                # Recursively fix layer configs
+                def fix_layer_config(layer_config):
+                    if isinstance(layer_config, dict):
+                        # Remove 'groups' from DepthwiseConv2D
+                        if layer_config.get('class_name') == 'DepthwiseConv2D':
+                            if 'config' in layer_config and 'groups' in layer_config['config']:
+                                del layer_config['config']['groups']
+                        
+                        # Recurse into nested configs
+                        for key, value in layer_config.items():
+                            if isinstance(value, (dict, list)):
+                                fix_layer_config(value)
+                    elif isinstance(layer_config, list):
+                        for item in layer_config:
+                            fix_layer_config(item)
+                
+                fix_layer_config(config)
+                
+                # Save fixed config
+                f.attrs['model_config'] = json.dumps(config).encode('utf-8')
+                
+        print("  ✅ Model compatibility fixed!")
+        return fixed_path
+        
+    except Exception as e:
+        print(f"  ⚠️ Could not fix model: {e}")
+        return None
 
 def load_model():
-    """Load the model weights from Hugging Face Hub."""
+    """Load the EfficientNetV2S skin cancer classifier from HuggingFace."""
     global model, model_load_error
-    if model is None:
-        model_load_error = None
-        print("Loading disease detection model from Hugging Face Hub...")
+    
+    if model is not None:
+        return model
+        
+    model_load_error = None
+    print("Loading skin disease detection model from HuggingFace...")
+    print("  Model: Miguel764/efficientnetv2s-skin-cancer-classifier")
+    print("  Dataset: HAM10000 (7 classes)")
+    print("  Accuracy: 88%")
+    
+    try:
+        # Download the .h5 model file from HuggingFace
+        model_path = hf_hub_download(
+            repo_id="Miguel764/efficientnetv2s-skin-cancer-classifier",
+            filename="efficientnetv2s.h5"
+        )
+        print(f"  Downloaded to: {model_path}")
+        
+        # Try to load directly first
         try:
-            # Download the entire model repository
-            model_dir = snapshot_download(
-                repo_id="Arko007/skin-disease-detector-ai",
-                cache_dir=None
-            )
-            print(f"Model downloaded to: {model_dir}")
-            
-            # Find the model file (.keras or .h5)
-            model_files = [f for f in os.listdir(model_dir) if f.endswith('.keras') or f.endswith('.h5')]
-            
-            if not model_files:
-                 # Check if there are other files like saved_model.pb in a subdirectory? 
-                 # But based on logs, we saw 'model.keras'.
-                 raise Exception(f"No .keras or .h5 file found in {model_dir}")
-
-            model_path = os.path.join(model_dir, model_files[0])
-            print(f"Loading weights from: {model_path}")
-            
-            # Build the architecture first
-            model = build_model()
-            
-            # Load the weights
-            # We use by_name=True or skip_mismatch=True if needed, but strict loading is better if architecture matches exactly.
-            # Given the error 'Could not locate class MBConvBlock', loading the *entire* model failed.
-            # Loading weights should work if the layers match.
-            try:
-                model.load_weights(model_path)
-                print("Weights loaded successfully!")
-            except Exception as e_weights:
-                print(f"Standard load_weights failed: {e_weights}")
-                # Fallback: try loading with verification disabled?
-                # or maybe the model file is a FULL SavedModel, not just weights. 
-                # Attempt to load it as a full model with safe_mode=False purely for weight extraction?
-                # No, that failed before.
-                raise e_weights
-
-        except Exception as e:
-            import traceback
-            error_msg = str(e)
-            error_trace = traceback.format_exc()
-            print(f"Error loading disease model: {error_msg}")
-            print(error_trace)
-            model_load_error = error_msg
-            model = None
+            model = tf.keras.models.load_model(model_path, compile=False)
+        except (TypeError, ValueError) as e:
+            if 'groups' in str(e):
+                # Fix compatibility issue and retry
+                fixed_path = fix_model_config(model_path)
+                if fixed_path:
+                    model = tf.keras.models.load_model(fixed_path, compile=False)
+                else:
+                    raise
+            else:
+                raise
+        
+        print("✅ Disease detection model loaded successfully!")
+        print(f"   Input shape: {model.input_shape}")
+        print(f"   Output shape: {model.output_shape}")
+        
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        print(f"❌ Error loading disease model: {error_msg}")
+        print(traceback.format_exc())
+        model_load_error = error_msg
+        model = None
+        
     return model
 
 def get_model():
-    """Get the loaded model."""
     return model
 
 def get_model_error():
-    """Get the model loading error message."""
     return model_load_error
 
 def preprocess_image(image, img_size=224):
-    """Preprocesses an image (PIL Image object) for the model."""
-    # EfficientNet logic
     img = image.convert('RGB')
     img = img.resize((img_size, img_size))
     img_array = np.array(img)
     img_array = np.expand_dims(img_array, axis=0)
-    
-    # EfficientNet typically expects inputs in [0, 255] if using the internal rescaling layers, 
-    # OR [-1, 1] / [0, 1] if preprocessed externally.
-    # The 'app.py' from the original repo used `efficientnet.preprocess_input` which does nothing for EfficientNet (pass-through) because it has internal normalization.
-    # However, the `model.py` which we ported earlier used `/ 255.0`.
-    # AND the error message in the logs showed `rescaling` layers.
-    # If the model has internal rescaling, we should pass 0-255.
-    # If we divide by 255 here AND the model divides by 255 internally, we get tiny numbers.
-    
-    # Safe bet: Try passing 0-255 (raw pixels). 
-    # But wait, `model.py` in the original repo (Step 55 previous session) had `/ 255.0`.
-    # Let's trust the `model.py` logic we saw earlier.
     img_array = tf.cast(img_array, tf.float32) / 255.0
     return img_array
 
+def apply_temperature_scaling(logits, temperature=TEMPERATURE):
+    scaled_logits = logits / temperature
+    return tf.nn.softmax(scaled_logits).numpy()
+
 def predict(image):
-    """Runs inference on a single image (PIL Image object)."""
+    """Runs inference on a single image."""
+    global model
+    
     if model is None:
         load_model()
         if model is None:
-             raise Exception(f"Model not loaded. Error: {model_load_error}")
+            raise Exception(f"Model not loaded. Error: {model_load_error}")
     
     processed_image = preprocess_image(image)
-    
-    predictions = model.predict(processed_image, verbose=0)
+    raw_output = model.predict(processed_image, verbose=0)
+    predictions = apply_temperature_scaling(raw_output)
     
     predicted_class_index = np.argmax(predictions, axis=1)[0]
-    predicted_class_name = CLASS_NAMES[predicted_class_index]
-    confidence = float(np.max(predictions, axis=1)[0])
+    class_code = CLASS_CODES[predicted_class_index]
+    class_info = CLASS_INFO[class_code]
+    predicted_class_name = class_info['name']
+    confidence = float(predictions[0][predicted_class_index])
+    
+    print(f"[DiseaseModel] Prediction: {predicted_class_name} ({confidence:.2%})")
     
     return predicted_class_name, confidence
+
+def get_class_info(class_name):
+    for code, info in CLASS_INFO.items():
+        if info['name'] == class_name:
+            return info
+    return {'name': class_name, 'severity': 'Unknown', 'description': 'Skin condition detected'}
