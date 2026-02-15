@@ -1,24 +1,22 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response, stream_with_context
 from PIL import Image
 from io import BytesIO
-from .utils import get_weather, ask_llm
-from .model import predict_skin
-from .disease_model import predict as predict_disease
 import cv2
 import numpy as np
-import mediapipe as mp
 import tempfile
-import requests
-from io import BytesIO
+import json
+import os
+import openai
+from datetime import datetime
+
+from .utils import get_weather, ask_llm, MODEL_PRIORITY
+from .model import predict_skin
 
 bp = Blueprint("api", __name__)
 
 # Initialize OpenAI
-import os
-import openai
-from flask import Response, stream_with_context
-
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 @bp.route("/chat", methods=["POST"])
 def chat_with_context():
@@ -54,60 +52,90 @@ def chat_with_context():
         description: Chat response
     """
     data = request.json
-    context = data.get('context', {})
-    question = data.get('question', '')
-    history = data.get('history', [])
+    context = data.get("context", {})
+    question = data.get("question", "")
+    history = data.get("history", [])
 
     if not question:
         return jsonify({"error": "Question is required"}), 400
 
     # System prompt engineering
-    from datetime import datetime
     current_time = datetime.now().strftime("%I:%M %p")
-    
-    system_prompt = f"""You are 'GlowBot', an expert AI Dermatologist assistant. 
-    You have analyzed the user's skin and here are the results:
-    
-    Condition: {context.get('predictedClass', 'Unknown')}
-    Confidence: {context.get('confidence', 0)}
-    Risk Level: {context.get('riskLevel', 'Unknown')}
-    Weather Context: UV Index {context.get('weather', {}).get('uv_index', 'N/A')}, Humidity {context.get('weather', {}).get('humidity', 'N/A')}%
-    Current Time: {current_time}
-    Time Period: {context.get('weather', {}).get('time_period', 'Unknown')}
-    
-    Your goal is to answer the user's questions specifically about THEIR skin condition based on this data.
-    - Be empathetic but professional.
-    - Give time-relevant advice (e.g. if it's night, suggest night routine; if daytime, suggest sun protection).
-    - Do NOT give medical prescriptions, only OTC advice and routine tips.
-    - If the risk is High/Very High, strongly advise seeing a doctor.
-    - Keep answers concise (under 3 sentences) unless asked for details.
-    """
+
+    system_prompt = f"""You are GlowBot — an AI skin assistant, NOT a medical doctor.
+  ANALYSIS_CONTEXT:
+    {json.dumps(context)}
+
+  CURRENT_TIME: {current_time}
+
+  GOALS:
+- Answer ONLY using this user's analysis context (current conditions + 48h forecast).
+- Be concise, friendly, and practical.
+- Maximum 2-3 sentences unless the user asks for more detail.
+
+SAFETY RULES:
+- Never claim to diagnose medical conditions.
+- Only suggest OTC skincare and routine advice.
+- If riskLevel is High or Very High, recommend consulting a dermatologist.
+- Avoid generic skincare advice unless relevant to the context.
+
+PERSONALIZATION:
+Prioritize advice based on:
+- detected skin type
+- current conditions (UV, humidity, temp)
+- forecast data (use this for questions about "tomorrow" or "future")
+- time of day
+"""
 
     messages = [{"role": "system", "content": system_prompt}]
-    
+
     # Add conversation history (last 5 messages to save tokens)
-    messages.extend(history[-5:])
-    
+    # Trim history to reduce token usage
+    trimmed_history = history[-5:]
+    for msg in trimmed_history:
+        msg["content"] = msg.get("content", "")[:400]
+
+    messages.extend(trimmed_history)
+
     # Add current question
     messages.append({"role": "user", "content": question})
 
     def generate():
-        try:
-            # Use OpenAI ChatCompletion (Streaming)
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                stream=True
-            )
-            
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+        for model in MODEL_PRIORITY:
+            try:
+                print(f"💬 Chat: Calling LLM (model: {model})...")
+                response = openai.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    stream=True,
+                    temperature=0.6,
+                    max_tokens=1000,
+                )
 
-        except Exception as e:
-            yield f"Error: {str(e)}"
+                # Stream successful response
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, "content") and delta.content:
+                        yield delta.content
 
-    return Response(stream_with_context(generate()), mimetype='text/plain')
+                # If streaming completed successfully, exit model loop entirely
+                return
+
+            except openai.RateLimitError:
+                print(f"🛑 Chat: Rate limit hit for {model}. Falling back...")
+                continue
+            except Exception as e:
+                print(f"❌ Chat: Exception in {model}: {e}")
+                if "model_not_found" in str(e).lower():
+                    continue
+                yield f"Error: {str(e)}"
+                return
+
+        yield "Error: All models exhausted or rate limited."
+
+    return Response(stream_with_context(generate()), mimetype="text/plain")
 
 
 def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.08):
@@ -134,23 +162,28 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.08)
 
     try:
         import mediapipe as mp
-        mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
-        
+
+        mp_selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(
+            model_selection=1
+        )
+
         # Step 1: MediaPipe segmentation
         seg = mp_selfie.process(rgb)
         mask = seg.segmentation_mask
         if mask is not None:
             human_ratio = float(np.mean(mask > 0.5))
-        
+
         # Step 2: Face detection
         try:
-            mp_face = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.6)
+            mp_face = mp.solutions.face_detection.FaceDetection(
+                model_selection=0, min_detection_confidence=0.6
+            )
             faces = mp_face.process(rgb)
             has_face = bool(faces.detections)
         except Exception as e:
             print(f"[validSkin] Face detection failed (non-critical): {e}")
             has_face = False
-            
+
     except Exception as e:
         print(f"[validSkin] MediaPipe failed, using HSV-only fallback: {e}")
         use_mediapipe = False
@@ -164,8 +197,10 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.08)
 
     if use_mediapipe and mask is not None:
         # Apply the human mask (only count skin-colored pixels inside segmented human regions)
-        skin_mask = cv2.bitwise_and(skin_mask, skin_mask, mask=(mask > 0.5).astype(np.uint8) * 255)
-    
+        skin_mask = cv2.bitwise_and(
+            skin_mask, skin_mask, mask=(mask > 0.5).astype(np.uint8) * 255
+        )
+
     skin_ratio = float(np.count_nonzero(skin_mask) / (img.size / 3))
 
     # Step 4: Texture sanity check
@@ -175,21 +210,30 @@ def detect_skin_in_image(file_storage, human_threshold=0.1, skin_threshold=0.08)
 
     # Final validity rule
     if use_mediapipe:
-        valid = ((human_ratio > human_threshold and skin_ratio > skin_threshold and texture_ok) or has_face)
+        valid = (
+            human_ratio > human_threshold and skin_ratio > skin_threshold and texture_ok
+        ) or has_face
     else:
         # HSV-only mode: be more lenient
-        valid = (skin_ratio > skin_threshold and texture_ok)
+        valid = skin_ratio > skin_threshold and texture_ok
 
-    print(f"[validSkin] human_ratio={human_ratio:.3f}, skin_ratio={skin_ratio:.3f}, variance={variance:.2f}, face={has_face}, mediapipe={use_mediapipe}")
+    print(
+        f"[validSkin] human_ratio={human_ratio:.3f}, skin_ratio={skin_ratio:.3f}, variance={variance:.2f}, face={has_face}, mediapipe={use_mediapipe}"
+    )
 
     return valid, human_ratio, skin_ratio
+
 
 def detect_disease_local(image_file):
     """
     Detect skin disease using the local loaded model.
     """
-    from .disease_model import get_model, get_model_error, predict as predict_disease_func
-    
+    from .disease_model import (
+        get_model,
+        get_model_error,
+        predict as predict_disease_func,
+    )
+
     try:
         # Check if model is loaded
         model = get_model()
@@ -197,33 +241,35 @@ def detect_disease_local(image_file):
             error = get_model_error()
             print(f"[DiseaseDetection] Model not loaded. Error: {error}")
             return None
-        
+
         # Reset file pointer to beginning
         image_file.seek(0)
-        
+
         # Read the file content
         image_bytes = image_file.read()
         image = Image.open(BytesIO(image_bytes))
-        
-        print(f"[DiseaseDetection] Running prediction...")
-        
+
+        print("[DiseaseDetection] Running prediction...")
+
         # Predict
         predicted_class, confidence = predict_disease_func(image)
-        
+
         disease_data = {
             "predicted_class": predicted_class,
             "confidence": float(confidence),
-            "confidence_percentage": f"{confidence:.2%}"
+            "confidence_percentage": f"{confidence:.2%}",
         }
-        
+
         print(f"[DiseaseDetection] Success: {disease_data}")
         return disease_data
 
     except Exception as e:
         import traceback
+
         print(f"[DiseaseDetection] Error: {str(e)}")
         print(traceback.format_exc())
         return None
+
 
 @bp.route("/predict", methods=["POST"])
 def predict():
@@ -280,12 +326,12 @@ def predict():
                 confidence_percentage:
                   type: string
     """
-    if 'image' not in request.files:
+    if "image" not in request.files:
         return jsonify({"error": "Image file is missing"}), 400
 
-    image_file = request.files['image']
-    lat = request.form.get('lat')
-    lon = request.form.get('lon')
+    image_file = request.files["image"]
+    lat = request.form.get("lat")
+    lon = request.form.get("lon")
 
     if not lat or not lon:
         return jsonify({"error": "Please provide lat and lon"}), 400
@@ -297,16 +343,18 @@ def predict():
         return jsonify({"error": "Invalid latitude or longitude"}), 400
 
     weather_data = get_weather(lat, lon)
-    
+
     # Call disease detection locally
     image_file.seek(0)  # Reset file pointer
     disease_result = detect_disease_local(image_file)
-    
+
     # Predict skin type with disease information
     image_file.seek(0)  # Reset file pointer again
     result = predict_skin(image_file, lat, lon, weather_data, ask_llm, disease_result)
 
     return jsonify(result)
+
+
 @bp.route("/validSkin", methods=["POST"])
 def valid_skin():
     """
@@ -314,17 +362,17 @@ def valid_skin():
     Expects multipart/form-data with 'image' field.
     Returns JSON: { valid: bool, human_ratio: float, skin_ratio: float }
     """
-    if 'image' not in request.files:
+    if "image" not in request.files:
         return jsonify({"error": "Image file is missing"}), 400
 
-    image_file = request.files['image']
+    image_file = request.files["image"]
 
     try:
         valid, human_ratio, skin_ratio = detect_skin_in_image(image_file)
 
         # ⚙️ Cast NumPy bool to Python bool
         valid = bool(valid)
-        
+
         # If skin is valid, also call disease detection API
         disease_result = None
         if valid:
@@ -339,9 +387,9 @@ def valid_skin():
             "valid": valid,
             "human_ratio": float(human_ratio),
             "skin_ratio": float(skin_ratio),
-            "message": "Skin detected" if valid else "No visible skin detected"
+            "message": "Skin detected" if valid else "No visible skin detected",
         }
-        
+
         # Include disease result if available
         if disease_result:
             response["disease"] = disease_result
